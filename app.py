@@ -5,7 +5,7 @@ import re
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="HISTORIAL FIRMANTE", layout="wide")
 
-# --- FUNCIONES DE LIMPIEZA ---
+# --- FUNCIONES DE LIMPIEZA Y FORMATO ---
 
 def limpiar_importe_formato_ingles(val):
     """
@@ -15,11 +15,9 @@ def limpiar_importe_formato_ingles(val):
         return 0.0
     
     val_str = str(val).strip()
-    
-    # 1. Limpieza de símbolos de moneda y espacios
+    # Limpieza de símbolos
     val_limpio = val_str.replace('$', '').replace(' ', '')
-    
-    # 2. ELIMINAR LA COMA (Separador de miles)
+    # ELIMINAR LA COMA (Separador de miles)
     val_limpio = val_limpio.replace(',', '')
     
     try:
@@ -29,14 +27,27 @@ def limpiar_importe_formato_ingles(val):
 
 def formato_visual_sin_decimales(valor):
     """
-    Muestra el número entero con PUNTO como separador de miles.
-    Ejemplo: 12345.67 -> "12.346" (Redondeado)
+    Para las TARJETAS (Métricas): Muestra el número entero con PUNTO como separador de miles.
     """
     if pd.isna(valor): return "0"
-    # {:,.0f} formatea con comas de miles y 0 decimales (12,346)
     val_str = "{:,.0f}".format(valor)
-    # Reemplazamos la coma por punto para el estilo solicitado
     return val_str.replace(",", ".")
+
+def formato_humano(valor):
+    """
+    Para la FRASE FINAL: Muestra "1.5 millones" o "560 mil".
+    """
+    if valor >= 1_000_000:
+        millones = valor / 1_000_000
+        # Muestra 1 decimal (ej: 1.5 millones). 
+        return f"${millones:.1f} millones"
+    elif valor >= 1_000:
+        miles = valor / 1_000
+        # Muestra sin decimales para miles (ej: 560 mil)
+        return f"${miles:.0f} mil"
+    else:
+        # Menor a mil, muestra el número normal
+        return f"${valor:,.0f}".replace(",", ".")
 
 # --- CARGA DE ARCHIVO ---
 def cargar_datos(uploaded_file):
@@ -96,7 +107,7 @@ def main():
             st.error("No se encontró la columna 'Importe'.")
             return
 
-        # 1. FILTRADO (Solo Compra)
+        # 1. FILTRADO
         if 'Tipo de Operación' in df.columns:
             df_filtrado = df[df['Tipo de Operación'].astype(str).str.contains('CO - Compra', case=False, na=False)].copy()
         else:
@@ -107,13 +118,11 @@ def main():
             return
 
         # 2. OBTENER NOMBRE DEL FIRMANTE
-        # Buscamos columnas probables donde pueda estar el nombre
         nombre_firmante = "No identificado"
         posibles_cols_nombre = ['Den. Firmante', 'Denominación', 'Firmante', 'Nombre', 'Razon Social']
         
         for col in posibles_cols_nombre:
             if col in df_filtrado.columns:
-                # Tomamos el primer valor no nulo
                 val = df_filtrado[col].dropna().iloc[0]
                 if val:
                     nombre_firmante = str(val).strip()
@@ -143,12 +152,13 @@ def main():
 
         # --- VISUALIZACIÓN ---
         
-        # Mostramos el nombre del firmante destacado
-        st.header(f"Cliente: {nombre_firmante}")
+        # CAMBIO 1: Etiqueta "Firmante"
+        st.header(f"Firmante: {nombre_firmante}")
         st.subheader("Resumen de Operaciones (Solo Compra)")
         
         col1, col2, col3, col4 = st.columns(4)
         
+        # Métricas (mantienen el formato numérico exacto pero limpio)
         col1.metric("Importe Total", f"$ {formato_visual_sin_decimales(importe_total)}")
         col2.metric("Cantidad Cheques", cantidad)
         col3.metric("Acreditado", f"$ {formato_visual_sin_decimales(total_acreditado)}", f"{pct_acreditado:.0f}%")
@@ -156,26 +166,22 @@ def main():
 
         st.divider()
 
-        # Frase Final
-        txt_monto = f"$ {formato_visual_sin_decimales(importe_total)}"
+        # CAMBIO 2: Frase Final (Sin negrita, texto cambiado, formato millones/mil)
+        txt_monto_humano = formato_humano(importe_total)
         
         if total_rechazado > 0:
-            st.error(f"Durante los últimos 12 meses se descontaron **{cantidad}** valores de la firma por un total de **{txt_monto}** con un margen de rechazos de **{pct_rechazado:.2f}%**.")
+            st.error(f"Durante los últimos 12 meses se descontaron {cantidad} valores de este firmante por un total de {txt_monto_humano} con un margen de rechazos de {pct_rechazado:.2f}%.")
         else:
-            st.success(f"Durante los últimos 12 meses se descontaron **{cantidad}** valores de la firma por un total de **{txt_monto}**, sin registrar rechazos.")
+            st.success(f"Durante los últimos 12 meses se descontaron {cantidad} valores de este firmante por un total de {txt_monto_humano}, sin registrar rechazos.")
 
-        # Tabla detalle (incluyendo columna firmante si existe)
         with st.expander("Ver detalle completo"):
-            # Filtramos columnas interesantes para mostrar
             cols_interes = ['Fecha de Op', 'Cheque', 'Importe', 'Estado']
             if nombre_firmante != "No identificado":
-                # Agregamos la columna del nombre si la encontramos antes
                 for col in posibles_cols_nombre:
                     if col in df_filtrado.columns:
                         cols_interes.append(col)
                         break
             
-            # Solo mostramos las que realmente existen en el df
             cols_finales = [c for c in cols_interes if c in df_filtrado.columns]
             st.dataframe(df_filtrado[cols_finales])
 
