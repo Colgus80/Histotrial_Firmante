@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import io
 
 # --- FUNCIONES AUXILIARES ---
 
@@ -29,23 +30,39 @@ def limpiar_importe_argentino(val):
 
 def cargar_datos(uploaded_file):
     """
-    Intenta leer el archivo como Excel real (.xlsx/.xls).
-    Si falla, intenta como CSV con ; y luego con ,
+    Intenta leer el archivo con múltiples estrategias:
+    1. Como Excel real.
+    2. Como Texto separado por TABULACIONES (Detectado en tu imagen).
+    3. Como CSV con punto y coma.
+    4. Como CSV con coma.
     """
-    # 1. Intento: Como Excel nativo
+    
+    # --- ESTRATEGIA 1: EXCEL NATIVO ---
     try:
+        # Engine 'openpyxl' es para .xlsx, para .xls viejos a veces falla si no son reales
         df = pd.read_excel(uploaded_file)
         return df
     except Exception:
-        pass # Si falla, seguimos al siguiente intento
+        pass # Falló, probablemente no es un Excel binario real
 
-    # Reseteamos el puntero del archivo para leerlo desde el principio
+    # Reseteamos el puntero para leer desde cero
     uploaded_file.seek(0)
 
-    # 2. Intento: Como CSV separado por punto y coma (común en latam)
+    # --- ESTRATEGIA 2: TEXTO CON TABULACIONES (La más probable según tu foto) ---
+    try:
+        # sep='\t' indica tabulación
+        df = pd.read_csv(uploaded_file, sep='\t', encoding='latin-1')
+        # Verificamos si leyó bien las columnas clave
+        if 'Tipo de Operación' in df.columns or len(df.columns) > 1:
+            return df
+    except Exception:
+        pass
+
+    uploaded_file.seek(0)
+
+    # --- ESTRATEGIA 3: CSV con PUNTO Y COMA ---
     try:
         df = pd.read_csv(uploaded_file, sep=';', encoding='latin-1')
-        # Verificación rápida: si solo tiene 1 columna, probablemente el separador estaba mal
         if len(df.columns) > 1:
             return df
     except Exception:
@@ -53,7 +70,7 @@ def cargar_datos(uploaded_file):
 
     uploaded_file.seek(0)
 
-    # 3. Intento: Como CSV separado por coma
+    # --- ESTRATEGIA 4: CSV con COMA ---
     try:
         df = pd.read_csv(uploaded_file, sep=',', encoding='latin-1')
         return df
@@ -68,21 +85,20 @@ def main():
     st.title("HISTORIAL FIRMANTE")
     st.markdown("---")
 
-    st.info("Sube tu archivo (Excel .xlsx, .xls o CSV). El sistema detectará el formato automáticamente.")
+    st.info("Sube tu archivo 'recuperoPrestamo...'. El sistema detectará automáticamente si es Excel o Texto.")
     
-    # Aceptamos múltiples extensiones
     uploaded_file = st.file_uploader("Cargar archivo", type=['csv', 'txt', 'xlsx', 'xls'])
 
     if uploaded_file is not None:
         
-        # Cargamos los datos usando la función inteligente
+        # Cargamos los datos
         df = cargar_datos(uploaded_file)
 
         if df is None:
-            st.error("No se pudo leer el archivo. Asegúrate de que sea un Excel o CSV válido.")
+            st.error("No se pudo leer el archivo. El formato no coincide con Excel, CSV ni Tabulaciones.")
             return
 
-        # Normalización de nombres de columnas (quita espacios extra al principio/final)
+        # Normalización de nombres de columnas
         df.columns = df.columns.str.strip()
 
         # Validación de columnas necesarias
@@ -90,8 +106,10 @@ def main():
         missing = [col for col in required_cols if col not in df.columns]
         
         if missing:
-            st.error(f"El archivo leído no tiene las columnas requeridas: {', '.join(missing)}")
+            st.error(f"Se leyó el archivo pero faltan columnas clave: {', '.join(missing)}")
             st.write("Columnas detectadas:", list(df.columns))
+            # Mostramos las primeras filas para que el usuario entienda qué pasó
+            st.dataframe(df.head())
             return
 
         # --- LOGICA DE NEGOCIO ---
@@ -100,15 +118,15 @@ def main():
         df_filtrado = df[df['Tipo de Operación'].astype(str).str.contains('CO - Compra', case=False, na=False)].copy()
 
         if df_filtrado.empty:
-            st.warning("El archivo se leyó correctamente, pero no hay registros 'CO - Compra'.")
+            st.warning("El archivo se leyó correctamente, pero no se encontraron filas con 'CO - Compra'.")
+            st.write("Muestra de datos leídos (primeras 5 filas):")
+            st.dataframe(df.head())
             return
 
         # 2. Convertir Importes
-        # Detectamos si la columna ya vino como número (Excel real) o texto (CSV)
         if pd.api.types.is_numeric_dtype(df_filtrado['Importe']):
             df_filtrado['Importe_Num'] = df_filtrado['Importe']
         else:
-            # Si es texto, aplicamos la limpieza argentina
             df_filtrado['Importe_Num'] = df_filtrado['Importe'].apply(limpiar_importe_argentino)
 
         # 3. Cálculos
@@ -123,7 +141,6 @@ def main():
         total_acreditado = df_filtrado.loc[mask_acreditado, 'Importe_Num'].sum()
         total_rechazado = df_filtrado.loc[mask_rechazado, 'Importe_Num'].sum()
 
-        # Porcentajes (Evitando división por cero)
         if importe_total_descontado > 0:
             pct_rechazado = (total_rechazado / importe_total_descontado * 100)
             pct_acreditado = (total_acreditado / importe_total_descontado * 100)
@@ -144,7 +161,6 @@ def main():
 
         st.divider()
 
-        # Frase Resumen
         txt_importe = f"$ {formato_argentino(importe_total_descontado)}"
         
         if total_rechazado > 0:
@@ -156,7 +172,7 @@ def main():
                    f"por un total de **{txt_importe}**. **Sin registrar rechazos**.")
             st.success(msg)
 
-        with st.expander("Ver datos procesados"):
+        with st.expander("Ver detalle de datos procesados"):
             st.dataframe(df_filtrado)
 
 if __name__ == "__main__":
