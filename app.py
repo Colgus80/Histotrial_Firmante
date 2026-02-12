@@ -19,29 +19,28 @@ def limpiar_importe_formato_ingles(val):
     # 1. Limpieza de símbolos de moneda y espacios
     val_limpio = val_str.replace('$', '').replace(' ', '')
     
-    # 2. ELIMINAR LA COMA (Separador de miles en este formato)
-    # Ejemplo: "21,354,480.00" -> "21354480.00"
+    # 2. ELIMINAR LA COMA (Separador de miles)
     val_limpio = val_limpio.replace(',', '')
-    
-    # 3. El punto ya es el decimal correcto para Python, no lo tocamos.
     
     try:
         return float(val_limpio)
     except ValueError:
         return 0.0
 
-def formato_visual_salida(valor):
+def formato_visual_sin_decimales(valor):
     """
-    Muestra el resultado final en formato visual amigable (con separadores).
+    Muestra el número entero con PUNTO como separador de miles.
+    Ejemplo: 12345.67 -> "12.346" (Redondeado)
     """
-    return "{:,.2f}".format(valor)
+    if pd.isna(valor): return "0"
+    # {:,.0f} formatea con comas de miles y 0 decimales (12,346)
+    val_str = "{:,.0f}".format(valor)
+    # Reemplazamos la coma por punto para el estilo solicitado
+    return val_str.replace(",", ".")
 
 # --- CARGA DE ARCHIVO ---
 def cargar_datos(uploaded_file):
-    """
-    Intenta leer el archivo (Excel, HTML, CSV)
-    """
-    # Estrategia 1: HTML (para "falsos excel")
+    # Estrategia 1: HTML
     try:
         uploaded_file.seek(0)
         dfs = pd.read_html(uploaded_file, encoding='latin-1', decimal='.', thousands=',')
@@ -81,8 +80,6 @@ def main():
     st.title("HISTORIAL FIRMANTE")
     st.markdown("---")
     
-    st.info("Configuración actual: **Punto (.) como decimal** y **Coma (,) como miles**.")
-
     uploaded_file = st.file_uploader("Cargar archivo", type=['xls', 'xlsx', 'csv', 'txt'])
 
     if uploaded_file is not None:
@@ -95,13 +92,11 @@ def main():
 
         df.columns = df.columns.str.strip()
 
-        # Validación básica
         if 'Importe' not in df.columns:
             st.error("No se encontró la columna 'Importe'.")
-            st.write("Columnas detectadas:", list(df.columns))
             return
 
-        # 1. FILTRADO
+        # 1. FILTRADO (Solo Compra)
         if 'Tipo de Operación' in df.columns:
             df_filtrado = df[df['Tipo de Operación'].astype(str).str.contains('CO - Compra', case=False, na=False)].copy()
         else:
@@ -111,13 +106,21 @@ def main():
             st.warning("No hay operaciones 'CO - Compra'.")
             return
 
-        # 2. CONVERSIÓN CON NUEVO FORMATO
-        df_filtrado['Importe_Num'] = df_filtrado['Importe'].apply(limpiar_importe_formato_ingles)
+        # 2. OBTENER NOMBRE DEL FIRMANTE
+        # Buscamos columnas probables donde pueda estar el nombre
+        nombre_firmante = "No identificado"
+        posibles_cols_nombre = ['Den. Firmante', 'Denominación', 'Firmante', 'Nombre', 'Razon Social']
+        
+        for col in posibles_cols_nombre:
+            if col in df_filtrado.columns:
+                # Tomamos el primer valor no nulo
+                val = df_filtrado[col].dropna().iloc[0]
+                if val:
+                    nombre_firmante = str(val).strip()
+                    break
 
-        # 3. DEBUG (Para que verifiques visualmente)
-        with st.expander("Verificación de lectura de importes"):
-            st.write("Revisa si la columna 'Importe_Num' coincide con 'Importe' (sin comas de miles):")
-            st.dataframe(df_filtrado[['Importe', 'Importe_Num']].head(10))
+        # 3. CONVERSIÓN
+        df_filtrado['Importe_Num'] = df_filtrado['Importe'].apply(limpiar_importe_formato_ingles)
 
         # 4. CÁLCULOS
         importe_total = df_filtrado['Importe_Num'].sum()
@@ -138,27 +141,43 @@ def main():
             pct_rechazado = 0
             pct_acreditado = 0
 
-        # 5. VISUALIZACIÓN
+        # --- VISUALIZACIÓN ---
+        
+        # Mostramos el nombre del firmante destacado
+        st.header(f"Cliente: {nombre_firmante}")
         st.subheader("Resumen de Operaciones (Solo Compra)")
         
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Importe Total", f"$ {formato_visual_salida(importe_total)}")
-        c2.metric("Cantidad Cheques", cantidad)
-        c3.metric("Acreditado", f"$ {formato_visual_salida(total_acreditado)}", f"{pct_acreditado:.2f}%")
-        c4.metric("Rechazado", f"$ {formato_visual_salida(total_rechazado)}", f"{pct_rechazado:.2f}%", delta_color="inverse")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        col1.metric("Importe Total", f"$ {formato_visual_sin_decimales(importe_total)}")
+        col2.metric("Cantidad Cheques", cantidad)
+        col3.metric("Acreditado", f"$ {formato_visual_sin_decimales(total_acreditado)}", f"{pct_acreditado:.0f}%")
+        col4.metric("Rechazado", f"$ {formato_visual_sin_decimales(total_rechazado)}", f"{pct_rechazado:.0f}%", delta_color="inverse")
 
         st.divider()
 
-        txt_monto = f"$ {formato_visual_salida(importe_total)}"
+        # Frase Final
+        txt_monto = f"$ {formato_visual_sin_decimales(importe_total)}"
         
         if total_rechazado > 0:
             st.error(f"Durante los últimos 12 meses se descontaron **{cantidad}** valores de la firma por un total de **{txt_monto}** con un margen de rechazos de **{pct_rechazado:.2f}%**.")
         else:
-            st.success(f"Durante los últimos 12 meses se descontaron **{cantidad}** valores de la firma por un total de **{txt_monto}**. **Sin registrar rechazos**.")
+            st.success(f"Durante los últimos 12 meses se descontaron **{cantidad}** valores de la firma por un total de **{txt_monto}**, sin registrar rechazos.")
 
+        # Tabla detalle (incluyendo columna firmante si existe)
         with st.expander("Ver detalle completo"):
-            cols = [c for c in ['Fecha de Op', 'Cheque', 'Importe', 'Estado'] if c in df_filtrado.columns]
-            st.dataframe(df_filtrado[cols])
+            # Filtramos columnas interesantes para mostrar
+            cols_interes = ['Fecha de Op', 'Cheque', 'Importe', 'Estado']
+            if nombre_firmante != "No identificado":
+                # Agregamos la columna del nombre si la encontramos antes
+                for col in posibles_cols_nombre:
+                    if col in df_filtrado.columns:
+                        cols_interes.append(col)
+                        break
+            
+            # Solo mostramos las que realmente existen en el df
+            cols_finales = [c for c in cols_interes if c in df_filtrado.columns]
+            st.dataframe(df_filtrado[cols_finales])
 
 if __name__ == "__main__":
     main()
