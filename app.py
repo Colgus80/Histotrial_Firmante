@@ -5,61 +5,54 @@ import re
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="HISTORIAL FIRMANTE", layout="wide")
 
-# --- FUNCIÓN DE LIMPIEZA SIMPLIFICADA ---
-def limpiar_importe(val):
+# --- FUNCIONES DE LIMPIEZA ---
+
+def limpiar_importe_formato_ingles(val):
     """
-    Convierte el formato argentino 1.000,00 a float 1000.00
-    Asume que el dato viene correcto de Excel.
+    Interpreta formato 1,234.56 (Coma miles, Punto decimal).
     """
     if pd.isna(val) or str(val).strip() == '':
         return 0.0
     
-    # Convertimos a string
     val_str = str(val).strip()
     
-    # 1. Si ya es un número limpio (ej: 1500.50), lo devolvemos
-    try:
-        return float(val_str)
-    except ValueError:
-        pass
-
-    # 2. Limpieza formato ARG (1.234,56)
-    # Quitamos el punto de los miles
-    val_limpio = val_str.replace('.', '')
-    # Cambiamos la coma por punto
-    val_limpio = val_limpio.replace(',', '.')
-    # Quitamos el signo $ si existe
-    val_limpio = val_limpio.replace('$', '').strip()
+    # 1. Limpieza de símbolos de moneda y espacios
+    val_limpio = val_str.replace('$', '').replace(' ', '')
+    
+    # 2. ELIMINAR LA COMA (Separador de miles en este formato)
+    # Ejemplo: "21,354,480.00" -> "21354480.00"
+    val_limpio = val_limpio.replace(',', '')
+    
+    # 3. El punto ya es el decimal correcto para Python, no lo tocamos.
     
     try:
         return float(val_limpio)
     except ValueError:
         return 0.0
 
-def formato_visual(valor):
-    return "{:,.2f}".format(valor).replace(",", "X").replace(".", ",").replace("X", ".")
+def formato_visual_salida(valor):
+    """
+    Muestra el resultado final en formato visual amigable (con separadores).
+    """
+    return "{:,.2f}".format(valor)
 
-# --- LECTURA DE ARCHIVO ROBUSTA ---
-def cargar_dataframe(uploaded_file):
+# --- CARGA DE ARCHIVO ---
+def cargar_datos(uploaded_file):
     """
-    Prueba todas las formas posibles de leer un archivo 'Excel' bancario.
+    Intenta leer el archivo (Excel, HTML, CSV)
     """
-    filename = uploaded_file.name.lower()
-    
-    # ESTRATEGIA 1: HTML (Muy común en archivos .xls que pesan poco y se ven con colores)
+    # Estrategia 1: HTML (para "falsos excel")
     try:
         uploaded_file.seek(0)
-        # pd.read_html devuelve una lista de tablas, tomamos la más grande
-        dfs = pd.read_html(uploaded_file, encoding='latin-1', decimal=',', thousands='.')
+        dfs = pd.read_html(uploaded_file, encoding='latin-1', decimal='.', thousands=',')
         if dfs:
-            # Buscamos la tabla que tenga la columna 'Importe'
             for df in dfs:
                 if 'Importe' in df.columns or len(df.columns) > 5:
                     return df
     except Exception:
-        pass # No es HTML
+        pass
 
-    # ESTRATEGIA 2: CSV/TEXTO CON TABULACIONES (Lo que detectamos antes)
+    # Estrategia 2: CSV/Texto con Tabulaciones
     try:
         uploaded_file.seek(0)
         df = pd.read_csv(uploaded_file, sep='\t', encoding='latin-1', dtype=str)
@@ -67,18 +60,18 @@ def cargar_dataframe(uploaded_file):
     except Exception:
         pass
 
-    # ESTRATEGIA 3: EXCEL REAL (.xlsx)
+    # Estrategia 3: Excel real
     try:
         uploaded_file.seek(0)
         df = pd.read_excel(uploaded_file, dtype=str)
         return df
     except Exception:
         pass
-
-    # ESTRATEGIA 4: CSV CON PUNTO Y COMA
+    
+    # Estrategia 4: CSV genérico
     try:
         uploaded_file.seek(0)
-        df = pd.read_csv(uploaded_file, sep=';', encoding='latin-1', dtype=str)
+        df = pd.read_csv(uploaded_file, sep=',', encoding='latin-1', dtype=str)
         return df
     except Exception:
         return None
@@ -88,55 +81,48 @@ def main():
     st.title("HISTORIAL FIRMANTE")
     st.markdown("---")
     
-    st.info("Sube el archivo tal cual lo descargaste. El sistema probará leerlo como HTML, Excel o Texto.")
+    st.info("Configuración actual: **Punto (.) como decimal** y **Coma (,) como miles**.")
 
     uploaded_file = st.file_uploader("Cargar archivo", type=['xls', 'xlsx', 'csv', 'txt'])
 
     if uploaded_file is not None:
         
-        df = cargar_dataframe(uploaded_file)
+        df = cargar_datos(uploaded_file)
 
         if df is None:
-            st.error("No se pudo leer el archivo con ningún método conocido.")
+            st.error("No se pudo leer el archivo.")
             return
 
-        # Limpiamos nombres de columnas (espacios extra)
         df.columns = df.columns.str.strip()
 
-        # Verificamos columnas críticas
+        # Validación básica
         if 'Importe' not in df.columns:
-            st.error("El archivo se leyó pero no se encuentra la columna 'Importe'.")
+            st.error("No se encontró la columna 'Importe'.")
             st.write("Columnas detectadas:", list(df.columns))
-            st.dataframe(df.head())
             return
 
-        # --- FILTRADO (Solo Compra) ---
-        # Normalizamos la columna para filtrar sin errores
+        # 1. FILTRADO
         if 'Tipo de Operación' in df.columns:
             df_filtrado = df[df['Tipo de Operación'].astype(str).str.contains('CO - Compra', case=False, na=False)].copy()
         else:
-            st.warning("No se encontró columna 'Tipo de Operación', se procesarán todas las filas.")
             df_filtrado = df.copy()
 
         if df_filtrado.empty:
             st.warning("No hay operaciones 'CO - Compra'.")
             return
 
-        # --- CONVERSIÓN ---
-        # Aplicamos la limpieza
-        df_filtrado['Importe_Num'] = df_filtrado['Importe'].apply(limpiar_importe)
+        # 2. CONVERSIÓN CON NUEVO FORMATO
+        df_filtrado['Importe_Num'] = df_filtrado['Importe'].apply(limpiar_importe_formato_ingles)
 
-        # --- DEBUG VISUAL ---
-        # Esto te permitirá ver si está leyendo bien los números
-        if st.checkbox("Mostrar verificación de datos (Debug)"):
-            st.write("Primeras 5 filas procesadas:")
-            st.dataframe(df_filtrado[['Importe', 'Importe_Num']].head())
+        # 3. DEBUG (Para que verifiques visualmente)
+        with st.expander("Verificación de lectura de importes"):
+            st.write("Revisa si la columna 'Importe_Num' coincide con 'Importe' (sin comas de miles):")
+            st.dataframe(df_filtrado[['Importe', 'Importe_Num']].head(10))
 
-        # --- CÁLCULOS ---
+        # 4. CÁLCULOS
         importe_total = df_filtrado['Importe_Num'].sum()
         cantidad = len(df_filtrado)
 
-        # Estados
         if 'Estado' in df.columns:
             estados = df_filtrado['Estado'].astype(str).str.upper()
             total_acreditado = df_filtrado.loc[estados.str.contains('ACREDITADO'), 'Importe_Num'].sum()
@@ -145,7 +131,6 @@ def main():
             total_acreditado = 0
             total_rechazado = 0
 
-        # Porcentajes
         if importe_total > 0:
             pct_rechazado = (total_rechazado / importe_total * 100)
             pct_acreditado = (total_acreditado / importe_total * 100)
@@ -153,27 +138,27 @@ def main():
             pct_rechazado = 0
             pct_acreditado = 0
 
-        # --- PANTALLA ---
+        # 5. VISUALIZACIÓN
         st.subheader("Resumen de Operaciones (Solo Compra)")
         
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Importe Total", f"$ {formato_visual(importe_total)}")
+        c1.metric("Importe Total", f"$ {formato_visual_salida(importe_total)}")
         c2.metric("Cantidad Cheques", cantidad)
-        c3.metric("Acreditado", f"$ {formato_visual(total_acreditado)}", f"{pct_acreditado:.1f}%")
-        c4.metric("Rechazado", f"$ {formato_visual(total_rechazado)}", f"{pct_rechazado:.1f}%", delta_color="inverse")
+        c3.metric("Acreditado", f"$ {formato_visual_salida(total_acreditado)}", f"{pct_acreditado:.2f}%")
+        c4.metric("Rechazado", f"$ {formato_visual_salida(total_rechazado)}", f"{pct_rechazado:.2f}%", delta_color="inverse")
 
         st.divider()
 
-        txt_monto = f"$ {formato_visual(importe_total)}"
+        txt_monto = f"$ {formato_visual_salida(importe_total)}"
         
         if total_rechazado > 0:
             st.error(f"Durante los últimos 12 meses se descontaron **{cantidad}** valores de la firma por un total de **{txt_monto}** con un margen de rechazos de **{pct_rechazado:.2f}%**.")
         else:
             st.success(f"Durante los últimos 12 meses se descontaron **{cantidad}** valores de la firma por un total de **{txt_monto}**. **Sin registrar rechazos**.")
 
-        with st.expander("Ver detalle de operaciones"):
-            cols_to_show = [c for c in ['Fecha de Op', 'Cheque', 'Importe', 'Estado', 'Cuit Firmante'] if c in df_filtrado.columns]
-            st.dataframe(df_filtrado[cols_to_show])
+        with st.expander("Ver detalle completo"):
+            cols = [c for c in ['Fecha de Op', 'Cheque', 'Importe', 'Estado'] if c in df_filtrado.columns]
+            st.dataframe(df_filtrado[cols])
 
 if __name__ == "__main__":
     main()
