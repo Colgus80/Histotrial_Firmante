@@ -170,9 +170,9 @@ def main():
         txt_monto_humano = formato_humano(importe_total)
         
         if total_rechazado > 0:
-            st.error(f"Durante los últimos 12 meses se descontaron {cantidad} valores de este firmante por un total de {txt_monto_humano} con un margen de rechazos de {pct_rechazado:.2f}%.")
+            st.error(f"Durante los últimos 12 meses se descontaron en nuestra entidad {cantidad} valores de este firmante por un total de {txt_monto_humano} con un margen de rechazos de {pct_rechazado:.2f}%.")
         else:
-            st.success(f"Durante los últimos 12 meses se descontaron {cantidad} valores de este firmante por un total de {txt_monto_humano}, sin registrar rechazos.")
+            st.success(f"Durante los últimos 12 meses se descontaron en nuestra entidad {cantidad} valores de este firmante por un total de {txt_monto_humano}, sin registrar rechazos.")
 
         with st.expander("Ver detalle completo"):
             cols_interes = ['Fecha de Op', 'Cheque', 'Importe', 'Estado']
